@@ -1,0 +1,13 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Swift 构建产物
+vendor/.build/
+*.xcodeproj/
+
+# 本地日志
+*.log
