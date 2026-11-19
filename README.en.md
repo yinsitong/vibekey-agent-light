@@ -169,10 +169,10 @@ tail -20 ~/Library/Logs/PromaVibeKey/bridge.log
 | Path | Purpose |
 | --- | --- |
 | `bridge.py` | main loop: tail events → state machine → drive lights |
-| `bin/vibekit-led` | prebuilt HID tool (`./build.sh` to rebuild) |
+| `bin/vibekit-led` | prebuilt HID tool (release build, stripped; `./build.sh` to rebuild) |
 | `vendor/` | VibeKit Swift sources from OpenVibeKey (MIT, see [`THIRD-PARTY.md`](THIRD-PARTY.md)) |
 | `install.sh` / `uninstall.sh` | register / remove the LaunchAgent |
-| `build.sh` | rebuild `bin/vibekit-led` |
+| `build.sh` | rebuild `bin/vibekit-led` (release + strip, so no local paths are embedded) |
 | `docs/设备笔记.md` | HID protocol, lighting bytes, vendor-channel notes |
 
 ## Limitations
@@ -181,6 +181,7 @@ tail -20 ~/Library/Logs/PromaVibeKey/bridge.log
 - Requires the receiver plugged in and the VibeKey powered on; writes are lost during standby
 - The event source is Proma's session format; other agents need an adapter
 - `bin/vibekit-led` is a prebuilt arm64 binary — rebuild on Intel with `./build.sh`
+- Rebuild via `./build.sh`, not bare `swift build`: it uses release + strip so the build machine's absolute paths stay out of the binary (debug builds embed them and double the size)
 - Does not interfere with the VibeKey's own features, but brightness must be re-applied after a device restart
 
 ## Credits

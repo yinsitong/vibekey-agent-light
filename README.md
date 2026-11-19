@@ -170,10 +170,10 @@ tail -20 ~/Library/Logs/PromaVibeKey/bridge.log
 | 路径 | 说明 |
 | --- | --- |
 | `bridge.py` | 主程序：tail 事件流 → 状态机 → 调 `bin/vibekit-led` |
-| `bin/vibekit-led` | 设备层 HID 工具（预编译；`./build.sh` 可重编） |
+| `bin/vibekit-led` | 设备层 HID 工具（预编译的 release 产物，已 strip；`./build.sh` 可重编） |
 | `vendor/` | VibeKit Swift 源码（来自 OpenVibeKey，MIT，见 [`THIRD-PARTY.md`](THIRD-PARTY.md)） |
 | `install.sh` / `uninstall.sh` | 注册 / 移除 LaunchAgent |
-| `build.sh` | 重新编译 `bin/vibekit-led` |
+| `build.sh` | 重新编译 `bin/vibekit-led`（release + strip，避免把本机路径写进二进制） |
 | `docs/设备笔记.md` | HID 协议、灯效字节、官方通道调研结论 |
 
 ## 已知限制
@@ -182,6 +182,7 @@ tail -20 ~/Library/Logs/PromaVibeKey/bridge.log
 - 需要设备接收器插在 Mac 上、VibeKey 开机；设备待机时写入无效
 - 事件源目前是 Proma 的会话格式；接其他 Agent 需要写适配器
 - `bin/vibekit-led` 是预编译的 arm64 产物。Intel Mac 请用 `./build.sh` 重编
+- 重编请走 `./build.sh`，不要直接 `swift build`：它会用 release + strip，避免把构建机的绝对路径写进二进制（debug 产物会，且体积翻倍）
 - 不影响 VibeKey 原功能（旋钮、按键、麦克风），但重启设备后需要桥重新施加一次亮度
 
 ## Credits
