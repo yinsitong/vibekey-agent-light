@@ -2,8 +2,8 @@
 
 # VibeKey Status Light · Agent Status Light for Ulanzi AU05
 
-Turn the lights on your Ulanzi Vibe Key (AU05) microphone into a status indicator
-for a local AI agent.
+Turn the lights on your Ulanzi Vibe Key (AU05) microphone — plus a macOS menu bar item —
+into a status indicator for a local AI agent.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)
 ![Platform: macOS](https://img.shields.io/badge/Platform-macOS-000000.svg)
@@ -29,16 +29,24 @@ There is already a light on your desk. Let it talk:
 The lights are driven over raw HID, not through Ulanzi Studio's status sync
 (Studio does not map AU05 states today — see [`docs/设备笔记.md`](docs/设备笔记.md)).
 
-## Four states
+When the light is out of reach — or you simply do not want it lit — the same state
+lives in the **macOS menu bar**: one coloured dot plus a short label.
+
+## Five states (light and menu bar share one source)
 
 ```text
-Agent state                 Light
-────────────────────────    ──────────────────────────────────────
-Thinking / calling tools    Dial ring + three keys fully lit (brightness 20)
-Waiting for your answer     Brightness 1 ↔ 20: 6 blinks → 2.5s pause → repeat
-Tool error / interrupted    ~2s fast blink → back to steady
-Turn finished / idle        Keys off, only a faint dial glow
+Agent state             Light                                  Menu bar
+──────────────────    ───────────────────────────────────    ──────────────────────────
+Thinking              full on (brightness 20)                 ● 思考 (blue)
+Calling tools         full on                                 ● 工作 (orange)
+Waiting for answer    1 ↔ 20: 6 blinks → 2.5s pause → repeat   ● 确认 (purple, blinks)
+Tool error             ~2s fast blink → steady                 ● 报错 (red, blinks)
+Turn finished         keys off, faint dial glow               ● 收尾 (teal)
+Idle                  keys off, faint dial glow               ● 空闲 (gray)
 ```
+
+The menu bar also has `○ 暂停` (lighting muted by hand) and `○ 离线`
+(the bridge stopped writing its heartbeat — time to reload).
 
 ## Features
 
@@ -55,9 +63,18 @@ Turn finished / idle        Keys off, only a faint dial glow
 - Full-on / work mode / per-step brightness / looping pulse / breathe / per-LED
 - Re-asserts brightness every 45s while busy, to survive the device's 5-minute idle standby
 
+**Menu bar status**
+
+- Native `NSStatusItem`, one Swift file compiled into `VibeKeyStatusBar.app`, no third-party deps
+- Coloured dot + short label (`● 思考` / `● 工作` / `● 确认` …), blinking for confirm and error
+- Menu shows the full state, last update time, pause toggle, icon-only mode, reload, open logs
+- Bridge writes a heartbeat every 5s; older than 20s shows `○ 离线` — a free health check
+- Tooltip carries the full state, active session count and update time
+
 **Engineering**
 
-- Managed by a LaunchAgent: starts at login, restarts on crash, `install.sh` is idempotent
+- Two LaunchAgents: `com.proma.vibekey-bridge` (light) and `com.proma.vibekey-menubar` (status bar);
+  both start at login, restart on crash, `install.sh` is idempotent
 - Logs and pause flag under `~/Library/Logs/PromaVibeKey/` (`touch pause` to mute)
 - Optionally reports state as a hook event to Ulanzi Studio (`--no-studio` to disable)
 - The event source is plain JSONL — adapting another agent only needs a small parser
@@ -70,9 +87,12 @@ Turn finished / idle        Keys off, only a faint dial glow
 git clone https://github.com/yinsitong/vibekey-agent-light.git
 cd vibekey-agent-light
 
-./install.sh                 # registers the LaunchAgent (login start + keep alive)
+./install.sh                 # registers both LaunchAgents (light + menu bar)
 python3 bridge.py --status   # show the currently detected state
 ```
+
+If the menu bar app is missing, `install.sh` calls `./build-menubar.sh` automatically
+(needs Xcode Command Line Tools). Or build it up front: `./build-menubar.sh`.
 
 `install.sh` writes this directory's absolute path into the LaunchAgent.
 **Re-run it after moving the folder.**
@@ -88,6 +108,12 @@ Test the light without an agent:
 ```bash
 python3 bridge.py --send confirm   # should blink
 python3 bridge.py --send idle      # should dim
+```
+
+Test only the menu bar (no light, no Studio):
+
+```bash
+python3 bridge.py --publish thinking   # menu bar should switch to «● 思考»
 ```
 
 ## Tuning
@@ -127,9 +153,12 @@ rm ~/Library/Logs/PromaVibeKey/pause       # resume
 │ Proma main process   │        │  bridge.py   │        │  Ulanzi AU05    │
 │ sessions/*.jsonl     │──tail─▶│ state machine│──HID──▶│ dial + 3 keys   │
 │ (live, per-event)    │        │ debounce     │        │                 │
-└──────────────────────┘        └──────────────┘        └─────────────────┘
-                                       │
-                                LaunchAgent
+└──────────────────────┘        └──────┬───────┘        └─────────────────┘
+                                       │ status.json (5s heartbeat)
+                                       ▼
+                                ┌──────────────┐
+                                │ menu bar app │──▶ «● 工作» in the menu bar
+                                └──────────────┘
 ```
 
 `bridge.py` tails the event files, translates each event into an internal state,
@@ -168,17 +197,21 @@ tail -20 ~/Library/Logs/PromaVibeKey/bridge.log
 
 | Path | Purpose |
 | --- | --- |
-| `bridge.py` | main loop: tail events → state machine → drive lights |
+| `bridge.py` | main loop: tail events → state machine → drive lights, writes `status.json` |
 | `bin/vibekit-led` | prebuilt HID tool (release build, stripped; `./build.sh` to rebuild) |
+| `menubar/VibeKeyStatusBar.swift` | menu bar app source (single file, `NSStatusItem`, 0.5s poll) |
+| `bin/VibeKeyStatusBar.app` | compiled menu bar app (`LSUIElement`, no Dock icon) |
 | `vendor/` | VibeKit Swift sources from OpenVibeKey (MIT, see [`THIRD-PARTY.md`](THIRD-PARTY.md)) |
-| `install.sh` / `uninstall.sh` | register / remove the LaunchAgent |
+| `install.sh` / `uninstall.sh` | register / remove both LaunchAgents |
 | `build.sh` | rebuild `bin/vibekit-led` (release + strip, so no local paths are embedded) |
+| `build-menubar.sh` | rebuild the menu bar app |
 | `docs/设备笔记.md` | HID protocol, lighting bytes, vendor-channel notes |
 
 ## Limitations
 
 - macOS 13+ only (HID and LaunchAgent are macOS mechanisms)
-- Requires the receiver plugged in and the VibeKey powered on; writes are lost during standby
+- The menu bar item lives on the active display's menu bar; on a very crowded bar (portrait screen, many icons) macOS may fold it into the `«` group — ⌘-drag it, or enable «icon only» in its menu
+- Requires the receiver plugged in and the VibeKey powered on; writes are lost during standby (the menu bar keeps showing state)
 - The event source is Proma's session format; other agents need an adapter
 - `bin/vibekit-led` is a prebuilt arm64 binary — rebuild on Intel with `./build.sh`
 - Rebuild via `./build.sh`, not bare `swift build`: it uses release + strip so the build machine's absolute paths stay out of the binary (debug builds embed them and double the size)

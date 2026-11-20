@@ -2,7 +2,7 @@
 
 # VibeKey 状态灯 · Agent Status Light for Ulanzi AU05
 
-用 Ulanzi Vibe Key（AU05）麦克风的灯，显示本地 AI Agent 正在干什么。
+用 Ulanzi Vibe Key（AU05）麦克风的灯 + macOS 菜单栏，显示本地 AI Agent 正在干什么。
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)
 ![Platform: macOS](https://img.shields.io/badge/Platform-macOS-000000.svg)
@@ -27,20 +27,26 @@ Agent 在我们本机跑长任务时，大部分时间待在后台。要知道�
 灯走设备层 HID 直控，不依赖 Ulanzi Studio 的状态同步
 （Studio 目前对 AU05 不做状态映射，调研过程见 [`docs/设备笔记.md`](docs/设备笔记.md)）。
 
-## 四种状态
+灯不在手边、或根本不想开灯的时候，同一个状态也显示在 **macOS 顶部菜单栏**：
+一个彩色圆点 + 两个字，抬头就能读到。
+
+## 五种状态（灯 + 菜单栏同源）
 
 ```text
-Agent 状态                  灯的表现
-──────────────────────     ────────────────────────────────────────
-思考 / 调工具中             旋钮环 + 三颗按键灯全亮（亮度 20，最亮档）
-弹问题等你确认              亮度 1 ↔ 20 交替：闪 6 下 → 停 2.5 秒 → 循环
-工具报错 / 中断             快闪约 2 秒 → 恢复常亮
-本轮结束 / 空闲             按键灯灭，只剩旋钮一圈微光
+Agent 状态            灯的表现                              菜单栏
+──────────────────   ─────────────────────────────────    ──────────────────────────
+思考中              全亮（亮度 20，最亮档）                ● 思考（蓝）
+执行工具            全亮                                   ● 工作（橙）
+弹问题等你确认      亮度 1 ↔ 20 交替：闪 6 下 → 停 2.5 秒   ● 确认（紫，闪烁）
+工具报错 / 中断     快闪约 2 秒 → 恢复常亮                  ● 报错（红，闪烁）
+本轮结束            按键灯灭，只剩旋钮一圈微光              ● 收尾（青）
+空闲                按键灯灭，只剩旋钮一圈微光              ● 空闲（灰）
 ```
 
 - **全亮**代表"我在干活，别催"
 - **闪烁**是全项目最重要的一个信号：它在等你做决定，而且只有你能解
 - **微光**是安全状态，说明可以放心离开
+- 菜单栏另外还有两个状态：`○ 暂停`（灯光联动被手动关掉）和 `○ 离线`（桥接进程没心跳，该重载了）
 
 ## 能力
 
@@ -57,9 +63,17 @@ Agent 状态                  灯的表现
 - 全亮 / 工作模式 / 逐档亮度 / 循环闪烁 / 呼吸 / 单灯控制
 - 忙态每 45 秒补写一次，抵抗设备 5 分钟无操作自动待机
 
+**菜单栏状态**
+
+- 原生 `NSStatusItem`，单文件 Swift 编译成 `VibeKeyStatusBar.app`，零第三方依赖
+- 彩色圆点 + 短标签（`● 思考` / `● 工作` / `● 确认`…），等你确认与报错会闪
+- 点开有完整状态、最近更新时间、「暂停灯光联动」、「只显示圆点」、「重载桥接」、「打开日志」
+- 桥接每 5 秒写一次心跳，超过 20 秒没更新就显示 `○ 离线`，等于自带健康检查
+- 鼠标悬停有 tooltip：完整状态 + 活跃会话数 + 更新时间
+
 **工程细节**
 
-- LaunchAgent 托管：登录自启、崩溃拉起、可反复执行 `install.sh`
+- 两个 LaunchAgent 托管：`com.proma.vibekey-bridge`（灯光）+ `com.proma.vibekey-menubar`（状态栏），登录自启、崩溃拉起、可反复执行 `install.sh`
 - 状态文件与日志落在 `~/Library/Logs/PromaVibeKey/`，`touch pause` 即可临时静音
 - 可选把状态作为 hook 事件上报给 Ulanzi Studio（`--no-studio` 可关）
 - 事件源格式是公开的 JSONL：接别的 Agent 只需写一个适配器
@@ -72,9 +86,12 @@ Agent 状态                  灯的表现
 git clone https://github.com/yinsitong/vibekey-agent-light.git
 cd vibekey-agent-light
 
-./install.sh                 # 装 LaunchAgent：登录自启 + 崩溃拉起
+./install.sh                 # 装两个 LaunchAgent：灯光 + 菜单栏状态
 python3 bridge.py --status   # 看当前识别到的状态
 ```
+
+菜单栏 App 缺失时 `install.sh` 会自动调 `./build-menubar.sh` 编译（需要 Xcode Command Line Tools）。
+也可以手动先编译：`./build-menubar.sh`。
 
 `install.sh` 会把当前目录的绝对路径写进 LaunchAgent。**移动过目录后重跑一次即可。**
 
@@ -89,6 +106,12 @@ python3 bridge.py --status   # 看当前识别到的状态
 ```bash
 python3 bridge.py --send confirm   # 应该看到一阵抖动
 python3 bridge.py --send idle      # 暗下去
+```
+
+只验证菜单栏（不动灯、不碰 Studio）：
+
+```bash
+python3 bridge.py --publish thinking   # 菜单栏应变成「● 思考」
 ```
 
 ## 状态映射可以改
@@ -128,9 +151,12 @@ rm ~/Library/Logs/PromaVibeKey/pause       # 恢复
 │ Proma 主进程          │        │  bridge.py   │        │  Ulanzi AU05    │
 │ sessions/*.jsonl     │──tail──▶│ 状态机        │──HID──▶│ 旋钮环 + 三键灯  │
 │ （逐条实时写入）       │        │ 防抖 + 补写   │        │                 │
-└──────────────────────┘        └──────────────┘        └─────────────────┘
-                                       │
-                                LaunchAgent 托管
+└──────────────────────┘        └──────┬───────┘        └─────────────────┘
+                                       │ status.json（每 5 秒心跳）
+                                       ▼
+                                ┌──────────────┐
+                                │ 菜单栏 App    │──▶ 顶部状态栏「● 工作」
+                                └──────────────┘
 ```
 
 `bridge.py` 持续 tail 事件文件，把每条事件翻译成内部状态；
@@ -169,17 +195,21 @@ tail -20 ~/Library/Logs/PromaVibeKey/bridge.log
 
 | 路径 | 说明 |
 | --- | --- |
-| `bridge.py` | 主程序：tail 事件流 → 状态机 → 调 `bin/vibekit-led` |
+| `bridge.py` | 主程序：tail 事件流 → 状态机 → 调 `bin/vibekit-led`，并写 `status.json` |
 | `bin/vibekit-led` | 设备层 HID 工具（预编译的 release 产物，已 strip；`./build.sh` 可重编） |
+| `menubar/VibeKeyStatusBar.swift` | 菜单栏 App 源码（单文件，`NSStatusItem` + 0.5 秒轮询 `status.json`） |
+| `bin/VibeKeyStatusBar.app` | 编译好的菜单栏 App（LSUIElement，不占 Dock） |
 | `vendor/` | VibeKit Swift 源码（来自 OpenVibeKey，MIT，见 [`THIRD-PARTY.md`](THIRD-PARTY.md)） |
-| `install.sh` / `uninstall.sh` | 注册 / 移除 LaunchAgent |
+| `install.sh` / `uninstall.sh` | 注册 / 移除两个 LaunchAgent |
 | `build.sh` | 重新编译 `bin/vibekit-led`（release + strip，避免把本机路径写进二进制） |
+| `build-menubar.sh` | 重新编译菜单栏 App |
 | `docs/设备笔记.md` | HID 协议、灯效字节、官方通道调研结论 |
 
 ## 已知限制
 
 - 只支持 macOS 13+（HID 与 LaunchAgent 都是 macOS 机制）
-- 需要设备接收器插在 Mac 上、VibeKey 开机；设备待机时写入无效
+- 菜单栏项跟随「当前活跃显示器」的菜单栏显示；菜单栏特别挤（比如竖屏 + 图标很多）时可能被系统收进 `«` 折叠区，⌘-拖拽挪位置或在菜单里勾「只显示圆点」腾空间
+- 需要设备接收器插在 Mac 上、VibeKey 开机；设备待机时写入无效（此时菜单栏仍正常显示状态）
 - 事件源目前是 Proma 的会话格式；接其他 Agent 需要写适配器
 - `bin/vibekit-led` 是预编译的 arm64 产物。Intel Mac 请用 `./build.sh` 重编
 - 重编请走 `./build.sh`，不要直接 `swift build`：它会用 release + strip，避免把构建机的绝对路径写进二进制（debug 产物会，且体积翻倍）

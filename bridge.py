@@ -28,6 +28,9 @@ Proma 状态 → Ulanzi Vibe Key (AU05) 灯光桥
 （ustudio-cli --agent claude-code --event ...）。Studio 目前对 AU05 不做
 状态映射，这部分只为将来 Studio 修好后能自动接上。
 
+状态还会写进 ~/Library/Logs/PromaVibeKey/status.json（每 5 秒心跳一次），
+菜单栏 App（bin/VibeKeyStatusBar.app）读它来显示状态：灯不在手边也能看。
+
 用法
 ----
   bridge.py                 常驻（由 LaunchAgent 启动）
@@ -102,12 +105,23 @@ STATE_EVENT = {
     "attention": ("Stop", 5.0),
 }
 PRIORITY = {"confirm": 6, "error": 5, "working": 4, "thinking": 3, "attention": 2, "idle": 1}
+# 写进 status.json detail 的中文描述（菜单栏第二行显示的就是它）
+DETAIL_LABEL = {
+    "thinking": "正在思考",
+    "working": "执行工具中",
+    "confirm": "等你确认",
+    "error": "工具报错",
+    "attention": "刚结束",
+    "idle": "无活动",
+}
 
 TICK = 0.25               # 轮询间隔
 DONE_DEBOUNCE = 1.6       # 已经给出最终答复后，安静这么久就算本轮结束
 LONG_SILENCE = 150.0      # 工具执行中长时间无事件（长命令）也不误判
 ERROR_HOLD = 2.0          # 报错状态保持时间
 SESSION_ALIVE = 120.0     # 文件多久内活跃过才算「这个会话在跑」
+STATUS_HEARTBEAT = 5.0    # status.json 的心跳间隔（菜单栏 App 靠它判断桥接是否活着）
+STATUS_FILE = os.path.join(LOG_DIR, "status.json")
 IDLE_DECAY = 900.0        # attention 挂多久后回到 idle
 LOG_MAX = 1_000_000
 PAUSE_FILE = os.path.join(LOG_DIR, "pause")
@@ -368,13 +382,40 @@ def list_session_files() -> list[str]:
     return [os.path.join(SESSION_DIR, n) for n in names if n.endswith(".jsonl")]
 
 
-def write_status(state: str, detail: str) -> None:
+_last_status = (None, 0.0)   # ((state, paused), 上次写入时间)
+
+
+def publish_status(state: str, detail: str = "", paused: bool = False) -> None:
+    """把当前状态写进 status.json，给菜单栏 App / 外部工具读。
+
+    与 Ulanzi Studio 是否可用无关：Studio 没开也照样写。
+    写入用「临时文件 + 原子替换」，避免菜单栏读到写了一半的 JSON。
+    状态变化立刻写；状态不变时每 STATUS_HEARTBEAT 秒补一次心跳，
+    这样菜单栏可以凭 at 字段判断桥接进程是否还在。
+    """
+    global _last_status
+    now = time.time()
+    key = (state, bool(paused))
+    prev_key, prev_at = _last_status
+    if key == prev_key and now - prev_at < STATUS_HEARTBEAT:
+        return
+    payload = {
+        "state": state,
+        "paused": bool(paused),
+        "detail": detail,
+        "at": int(now * 1000),
+        "pid": os.getpid(),
+    }
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
-        with open(os.path.join(LOG_DIR, "status.json"), "w", encoding="utf-8") as fh:
-            json.dump({"state": state, "detail": detail, "at": int(time.time() * 1000)}, fh, ensure_ascii=False)
-    except OSError:
-        pass
+        tmp = STATUS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+        os.replace(tmp, STATUS_FILE)
+    except OSError as exc:
+        log("status.fail %s" % exc)
+        return
+    _last_status = (key, now)
 
 
 def cleanup_orphan_pulses() -> None:
@@ -467,7 +508,6 @@ def run_loop() -> None:
                     current = target
                     if target == "attention":
                         attention_since = now
-                    write_status(target, "-> %s" % event)
                 else:
                     # 送不进去（例如 Studio 没开）就退回去，下一轮重试
                     current = None
@@ -476,6 +516,15 @@ def run_loop() -> None:
         elif target == "attention" and attention_since and now - attention_since > IDLE_DECAY:
             target = "idle"
             current = None
+
+        # 菜单栏 App 读的就是这里。与 Studio 是否可用无关，paused 也如实反映。
+        if paused:
+            publish_status("paused", "灯光联动已暂停", True)
+        else:
+            # detail 是给人看的（菜单栏第二行），写中文 + 会话数，不放 PreToolUse 这类内部事件名
+            n = len(live)
+            label = DETAIL_LABEL.get(target, target)
+            publish_status(target, label + (" · %d 个会话" % n if n else ""), False)
 
         # 清理长时间不活跃的跟踪项
         if len(sessions) > 40:
@@ -490,7 +539,17 @@ def main() -> int:
     ap.add_argument("--send", metavar="STATE", help="发送单个状态后退出：idle/thinking/working/error/attention")
     ap.add_argument("--demo", action="store_true", help="依次演示全部状态")
     ap.add_argument("--status", action="store_true", help="打印最近的桥接状态")
+    ap.add_argument("--publish", metavar="STATE", help="只写 status.json（不碰设备/Studio），用于验证菜单栏")
     args = ap.parse_args()
+
+    if args.publish:
+        state = args.publish
+        if state not in STATE_EVENT and state not in ("paused", "offline"):
+            print("未知状态 %s" % state)
+            return 2
+        publish_status(state, "手动发送（--publish）", state == "paused")
+        print("已写入 %s：%s" % (STATUS_FILE, state))
+        return 0
 
     if args.send:
         if args.send not in STATE_EVENT:
@@ -506,12 +565,15 @@ def main() -> int:
         return 0
 
     if args.status:
-        path = os.path.join(LOG_DIR, "status.json")
         try:
-            with open(path, encoding="utf-8") as fh:
-                print(fh.read())
-        except OSError:
+            with open(STATUS_FILE, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
             print("还没有状态记录")
+            return 0
+        age = time.time() - (data.get("at", 0) / 1000.0)
+        print("state=%-9s paused=%-5s age=%.1fs detail=%s" % (
+            data.get("state"), bool(data.get("paused")), age, data.get("detail")))
         return 0
 
     try:
