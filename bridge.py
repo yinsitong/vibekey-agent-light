@@ -169,6 +169,7 @@ CLI = None
 _busy = None
 _last_assert = 0.0
 _pulse_proc = None
+_pulse_started = 0.0    # 本组脉冲的起点（时间戳），给菜单栏做同频闪烁用
 
 
 def stop_pulse() -> bool:
@@ -192,7 +193,7 @@ def stop_pulse() -> bool:
 
 def start_pulse() -> None:
     """后台起持续脉冲；状态一变就会被 stop_pulse 干掉。"""
-    global _pulse_proc
+    global _pulse_proc, _pulse_started
     if _pulse_proc is not None and _pulse_proc.poll() is None:
         return
     if not (os.path.isfile(LED_TOOL) and os.access(LED_TOOL, os.X_OK)):
@@ -203,6 +204,7 @@ def start_pulse() -> None:
              str(PULSE_HIGH), str(PULSE_BURST), str(PULSE_GAP)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        _pulse_started = time.time()
         log("pulse start pid=%s %sms %s<->%s" % (_pulse_proc.pid, PULSE_MS, PULSE_LOW, PULSE_HIGH))
     except OSError as exc:
         log("pulse.fail %s" % exc)
@@ -385,17 +387,21 @@ def list_session_files() -> list[str]:
 _last_status = (None, 0.0)   # ((state, paused), 上次写入时间)
 
 
-def publish_status(state: str, detail: str = "", paused: bool = False) -> None:
+def publish_status(state: str, detail: str = "", paused: bool = False,
+                   extra: dict | None = None) -> None:
     """把当前状态写进 status.json，给菜单栏 App / 外部工具读。
 
     与 Ulanzi Studio 是否可用无关：Studio 没开也照样写。
     写入用「临时文件 + 原子替换」，避免菜单栏读到写了一半的 JSON。
     状态变化立刻写；状态不变时每 STATUS_HEARTBEAT 秒补一次心跳，
     这样菜单栏可以凭 at 字段判断桥接进程是否还在。
+
+    extra 用于带脉冲同步信息（pulseAt/pulseMs/pulseBurst/pulseGap），
+    菜单栏据此算出当前是第几个半拍，于是和灯的真实节奏对齐。
     """
     global _last_status
     now = time.time()
-    key = (state, bool(paused))
+    key = (state, bool(paused), json.dumps(extra, sort_keys=True) if extra else None)
     prev_key, prev_at = _last_status
     if key == prev_key and now - prev_at < STATUS_HEARTBEAT:
         return
@@ -406,6 +412,8 @@ def publish_status(state: str, detail: str = "", paused: bool = False) -> None:
         "at": int(now * 1000),
         "pid": os.getpid(),
     }
+    if extra:
+        payload.update(extra)
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         tmp = STATUS_FILE + ".tmp"
@@ -524,7 +532,16 @@ def run_loop() -> None:
             # detail 是给人看的（菜单栏第二行），写中文 + 会话数，不放 PreToolUse 这类内部事件名
             n = len(live)
             label = DETAIL_LABEL.get(target, target)
-            publish_status(target, label + (" · %d 个会话" % n if n else ""), False)
+            # 闪灯时把脉冲起点与节奏一并写出去，菜单栏才能和灯同频而不是各闪各的
+            extra = None
+            if target in PULSE_STATES and _pulse_proc is not None:
+                extra = {
+                    "pulseAt": int((_pulse_started or now) * 1000),
+                    "pulseMs": PULSE_MS,
+                    "pulseBurst": PULSE_BURST,
+                    "pulseGap": PULSE_GAP,
+                }
+            publish_status(target, label + (" · %d 个会话" % n if n else ""), False, extra)
 
         # 清理长时间不活跃的跟踪项
         if len(sessions) > 40:
@@ -547,7 +564,16 @@ def main() -> int:
         if state not in STATE_EVENT and state not in ("paused", "offline"):
             print("未知状态 %s" % state)
             return 2
-        publish_status(state, "手动发送（--publish）", state == "paused")
+        # 闪灯类状态一并带上脉冲信息，方便单独验证菜单栏的同频闪烁是否正常
+        extra = None
+        if state in PULSE_STATES:
+            extra = {
+                "pulseAt": int(time.time() * 1000),
+                "pulseMs": PULSE_MS,
+                "pulseBurst": PULSE_BURST,
+                "pulseGap": PULSE_GAP,
+            }
+        publish_status(state, "手动发送（--publish）", state == "paused", extra)
         print("已写入 %s：%s" % (STATUS_FILE, state))
         return 0
 

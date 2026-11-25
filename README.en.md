@@ -39,8 +39,8 @@ Agent state             Light                                  Menu bar
 ──────────────────    ───────────────────────────────────    ──────────────────────────
 Thinking              full on (brightness 20)                 ● 思考 (blue)
 Calling tools         full on                                 ● 工作 (orange)
-Waiting for answer    1 ↔ 20: 6 blinks → 2.5s pause → repeat   ● 确认 (purple, blinks)
-Tool error             ~2s fast blink → steady                 ● 报错 (red, blinks)
+Waiting for answer    1 ↔ 20: 6 blinks → 2.5s solid           ● 确认 (purple, in-sync + glow)
+Tool error            fast blink → solid                     ● 报错 (red, in-sync + glow)
 Turn finished         keys off, faint dial glow               ● 收尾 (teal)
 Idle                  keys off, faint dial glow               ● 空闲 (gray)
 ```
@@ -66,8 +66,16 @@ The menu bar also has `○ 暂停` (lighting muted by hand) and `○ 离线`
 **Menu bar status**
 
 - Native `NSStatusItem`, one Swift file compiled into `VibeKeyStatusBar.app`, no third-party deps
-- Coloured dot + short label (`● 思考` / `● 工作` / `● 确认` …), blinking for confirm and error
-- Menu shows the full state, last update time, pause toggle, icon-only mode, reload, open logs
+- Coloured dot + short label (`● 思考` / `● 工作` / `● 确认` …)
+- **Blinks in the same rhythm as the mic light**: for confirm / error the dot swells and grows a
+  same-colour inner glow, cycling 「6 blinks → 2.5s solid」 exactly like the device. The bridge writes
+  `pulseAt` plus the cadence into `status.json`; the menu bar derives the current half-beat from
+  `(now - pulseAt)`, so both share one clock instead of blinking independently. Falls back to a
+  local clock when `pulseAt` is absent.
+- **Bottom-edge outer glow**: a same-colour halo spills out under the whole item (a click-through
+  transparent panel). It pulses with the beat for confirm/error, keeps a faint base glow while
+  thinking/working, and disappears for idle/finished/paused/offline — quiet when nothing is happening
+- Menu shows the full state, last update time, pause toggle, icon-only mode, glow toggle, reload, open logs
 - Bridge writes a heartbeat every 5s; older than 20s shows `○ 离线` — a free health check
 - Tooltip carries the full state, active session count and update time
 
@@ -180,8 +188,23 @@ All subcommands: `busy` `pulse` `pulse-loop` `mode` `dial` `dialcfg` `flash`
 `dump88` `ledtypes` `breathe` `ledrestore` `status` `get` `dump` `probe` `sniff`.
 
 ```bash
+python3 bridge.py --publish confirm   # only rewrites status.json (no light) — test the menu bar pulse
 tail -20 ~/Library/Logs/PromaVibeKey/bridge.log
 ```
+
+## status.json fields
+
+Read by the menu bar app and any external tool (`~/Library/Logs/PromaVibeKey/status.json`):
+
+| Field | Meaning |
+| --- | --- |
+| `state` | `thinking` / `working` / `confirm` / `error` / `attention` / `idle` / `paused` |
+| `paused` | lighting muted by hand |
+| `detail` | human-readable second line (word + session count) |
+| `at` | write timestamp in ms; refreshed at least every 5s — older than 20s means the bridge is gone |
+| `pid` | bridge process id |
+| `pulseAt` | pulsing states only: ms timestamp when the light's pulse cycle started; the menu bar derives its beat from it |
+| `pulseMs` / `pulseBurst` / `pulseGap` | pulsing states only: ms per half-beat / blinks per burst / pause between bursts |
 
 ## Three gotchas worth knowing
 
@@ -192,6 +215,17 @@ tail -20 ~/Library/Logs/PromaVibeKey/bridge.log
    Hence `busy` writes 19 then 20, and blinking alternates two levels.
 3. **The device enters standby after 5 minutes idle.** Writes still return success
    but nothing happens. The bridge re-asserts brightness every 45s while busy.
+
+Three more on the menu-bar side (only matter when touching the code):
+
+- Do not colour status bar text with `attributedTitle`: on a dark menu bar `labelColor` resolves to
+  near-black and the label disappears. Split it into a coloured dot in `button.image` and plain text
+  in `button.title`.
+- Never keep `statusItem.menu` set permanently — the menu pops at the far right of the screen instead
+  of under the item. Attach it just before `performClick` and detach right after.
+- Do not blink by swapping `button.image`: every assignment relayouts the whole status item group,
+  costing ~7% CPU at 250ms cadence. Put a `CALayer` inside the button and animate its
+  `opacity`/`transform` instead — measured 0.7%.
 
 ## Layout
 
