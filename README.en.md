@@ -75,7 +75,12 @@ The menu bar also has `○ 暂停` (lighting muted by hand) and `○ 离线`
 - **Bottom-edge outer glow**: a same-colour halo spills out under the whole item (a click-through
   transparent panel). It pulses with the beat for confirm/error, keeps a faint base glow while
   thinking/working, and disappears for idle/finished/paused/offline — quiet when nothing is happening
-- Menu shows the full state, last update time, pause toggle, icon-only mode, glow toggle, reload, open logs
+- Menu shows the full state, last update time, pause toggle, icon-only mode, glow toggle, locate, reload, open logs
+- **When it is lost in a crowded or collapsed menu bar**: choose "locate me in the tray" and the item
+  turns into a **red bullseye with「◀ 我 ▶」** for 30 seconds. Can also be triggered from outside:
+  `defaults write com.proma.vibekey-menubar locateRequest -int $(date +%s)`
+- Self-heal: if it stays off the menu bar (window height 0) for ~3s it rebuilds the status item,
+  at most once per 20s
 - Bridge writes a heartbeat every 5s; older than 20s shows `○ 离线` — a free health check
 - Tooltip carries the full state, active session count and update time
 

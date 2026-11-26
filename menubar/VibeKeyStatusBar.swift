@@ -46,6 +46,10 @@ private let jsonDecoder = JSONDecoder()
 private let tickInterval: TimeInterval = 0.5
 /// 发光动画帧间隔。灯的半拍是 250ms，20fps 足够让明暗切换看起来干净
 private let animInterval: TimeInterval = 1.0 / 12.0
+/// 「定位我」窗口期显示的文字与时长
+private let locateLabel = "◀ 我 ▶"
+private let locateSeconds: TimeInterval = 30
+
 /// 兜底脉冲参数（与 bridge.py 的默认值一致）
 private let fallbackPulseMs = 250
 private let fallbackBurst = 6
@@ -225,6 +229,15 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
     // 我们的标签都是两个字，宽度算一次定死，闪灯只换图片不动布局。
     private var labelLength: CGFloat = 72
     private var iconLength: CGFloat = 28
+    private var locateLength: CGFloat = 92
+
+    // 「在收纳栏里定位我」：把状态项变成一个显眼的跳动标记，方便在 Barbee 之类
+    // 收纳工具的面板里一眼认出哪一个是这盏灯。窗口期结束自动恢复。
+    private var locateUntil: Date?
+    private var locateTimer: Timer?
+    private var locateBlink = false
+    private var locateItem: NSMenuItem!
+    private var lastLocateRequest = 0
 
     // 上一帧的“视觉签名”，没变就整帧跳过
     private var lastFrameKey = ""
@@ -281,6 +294,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
         buildMenu()
         measureLengths()
         installDotLayer()
+        lastLocateRequest = UserDefaults.standard.integer(forKey: "locateRequest")
         refresh()
         render(force: true)
 
@@ -311,10 +325,19 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
         }
         labelLength = ceil(dotWidth + widest) + 10
         iconLength = dotWidth + 8
+        // 定位标签更长，单独量，避免窗口期被裁
+        let locateW = (" " + locateLabel as NSString).size(withAttributes: [.font: font]).width
+        locateLength = ceil(dotWidth + locateW) + 10
     }
 
     private func applyLength() {
+        if isLocating { statusItem.length = locateLength; return }
         statusItem.length = iconOnly ? iconLength : labelLength
+    }
+
+    private var isLocating: Bool {
+        guard let until = locateUntil else { return false }
+        return Date() < until
     }
 
     private func debugDump() {
@@ -361,6 +384,11 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
         glowItem.target = self
         menu.addItem(glowItem)
 
+        locateItem = NSMenuItem(title: "在收纳栏里定位我（闪 30 秒）",
+                                action: #selector(startLocate), keyEquivalent: "")
+        locateItem.target = self
+        menu.addItem(locateItem)
+
         menu.addItem(.separator())
 
         let reload = NSMenuItem(title: "重载灯光桥接", action: #selector(reloadBridge), keyEquivalent: "")
@@ -399,8 +427,16 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
     // MARK: 刷新
 
     @objc private func tick() {
+        reviveIfHidden()
         refresh()
         render()
+        // 外部也能触发定位（defaults write com.proma.vibekey-menubar locateRequest -int <时间戳>），
+        // 方便脚本化，也方便在收纳面板里怀疑“哪个是我”时用命令再闪一发
+        let req = UserDefaults.standard.integer(forKey: "locateRequest")
+        if req > lastLocateRequest {
+            lastLocateRequest = req
+            if req > 1 { startLocate() }
+        }
     }
 
     private func refresh() {
@@ -473,6 +509,12 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
     private func render(force: Bool = false) {
         // 菜单打开期间不改按钮标题：宽度一变，菜单可能跟着漂
         if !force && statusItem.menu != nil { return }
+        // 定位期由 locateTick 独占标题，这里不要抢
+        if isLocating {
+            applyLength()
+            applyDot()
+            return
+        }
         let st = style(for: state)
         let key = "\(state)|\(iconOnly)"
         if !force && key == lastTitleKey {
@@ -524,12 +566,19 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
         guard let layer = dotLayer else { return }
         let st = style(for: state)
 
-        let contentsKey = "\(state)|\(st.hollow)"
+        // 定位期统一换成高对比靶心：不管原来是什么状态色，都变成最容易认出的形状
+        let locating = isLocating
+        let contentsKey = locating ? "locate" : "\(state)|\(st.hollow)"
         if force || contentsKey != lastDotContentsKey {
             lastDotContentsKey = contentsKey
-            layer.contents = makeDotCGImage(color: st.color, hollow: st.hollow,
-                                            glow: st.hollow ? 0 : 1)
+            if locating {
+                layer.contents = makeLocateCGImage()
+            } else {
+                layer.contents = makeDotCGImage(color: st.color, hollow: st.hollow,
+                                                glow: st.hollow ? 0 : 1)
+            }
         }
+        if locating { return }
 
         let on = st.blink ? pulsePhase().on : true
         let opacity: Float = on ? 1.0 : 0.26
@@ -596,6 +645,38 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
         return ctx.makeImage()
     }
 
+    /// 定位用的靶心：红色外环 + 白色中环 + 红色实心中心。
+    /// 形状和普通圆点差异极大，在很小的缩略图里也能一眼分辨。
+    private func makeLocateCGImage() -> CGImage? {
+        let pt: CGFloat = 20
+        let scale: CGFloat = 2
+        let px = Int(pt * scale)
+        guard let ctx = CGContext(data: nil, width: px, height: px,
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.setShouldAntialias(true)
+
+        let red = NSColor(srgbRed: 1.0, green: 0.20, blue: 0.16, alpha: 1)
+        let c = CGPoint(x: pt / 2, y: pt / 2)
+
+        // 外环
+        ctx.setStrokeColor(red.cgColor)
+        ctx.setLineWidth(2.6)
+        ctx.strokeEllipse(in: CGRect(x: 1.4, y: 1.4, width: pt - 2.8, height: pt - 2.8))
+        // 白色中环
+        ctx.setStrokeColor(NSColor.white.cgColor)
+        ctx.setLineWidth(1.4)
+        ctx.strokeEllipse(in: CGRect(x: 4.4, y: 4.4, width: pt - 8.8, height: pt - 8.8))
+        // 中心实心
+        ctx.setFillColor(red.cgColor)
+        ctx.fillEllipse(in: CGRect(x: c.x - 2.2, y: c.y - 2.2, width: 4.4, height: 4.4))
+
+        return ctx.makeImage()
+    }
+
     private func tooltip(for st: Style) -> String {
         var lines = ["Proma：\(st.full)"]
         if !detail.isEmpty { lines.append(detail) }
@@ -646,6 +727,92 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
     @objc private func toggleIconOnly() {
         iconOnly.toggle()
         updateMenuTitles()
+        render(force: true)
+    }
+
+    // MARK: 自愈
+
+    /// 菜单栏收纳工具（Barbee 等）或系统溢出会把项藏成「窗口高度 0」，
+    /// 而且藏完不一定会把它登记回自己的清单——用户两头都看不见。
+    /// 这里每轮自检：连续几轮不可见就销毁重建一次，重建的项会被当作「新项」重新走安置流程。
+    private var hiddenTicks = 0
+    private var lastRevive = Date.distantPast
+
+    private func reviveIfHidden() {
+        guard let win = statusItem.button?.window else {
+            hiddenTicks += 1
+            maybeRevive()
+            return
+        }
+        // 高度为 0 或窗口宽高非正 = 不在菜单栏上
+        let visible = win.frame.height > 1 && win.frame.width > 1 && win.isVisible
+        if visible {
+            hiddenTicks = 0
+        } else {
+            hiddenTicks += 1
+            maybeRevive()
+        }
+    }
+
+    private func maybeRevive() {
+        // 约 3 秒不可见才动手，避免误判启动瞬间的布局过程；两次重建至少隔 20 秒
+        guard hiddenTicks >= 6, Date().timeIntervalSince(lastRevive) > 20 else { return }
+        lastRevive = Date()
+        hiddenTicks = 0
+        rebuildStatusItem()
+    }
+
+    private func rebuildStatusItem() {
+        NSStatusBar.system.removeStatusItem(statusItem)
+        dotLayer = nil
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.autosaveName = "com.proma.vibekey-menubar.item"
+        statusItem.button?.alignment = .center
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(handleClick)
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        measureLengths()
+        installDotLayer()
+        lastTitleKey = ""
+        lastDotContentsKey = ""
+        lastDotKey = ""
+        lastGlowKey = ""
+        render(force: true)
+    }
+
+    // MARK: 定位（在收纳栏里认出自己）
+
+    @objc private func startLocate() {
+        locateUntil = Date().addingTimeInterval(locateSeconds)
+        locateBlink = false
+        lastTitleKey = ""
+        render(force: true)
+
+        locateTimer?.invalidate()
+        let t = Timer.scheduledTimer(timeInterval: 0.22, target: self,
+                                     selector: #selector(locateTick), userInfo: nil, repeats: true)
+        RunLoop.current.add(t, forMode: .common)
+        locateTimer = t
+    }
+
+    @objc private func locateTick() {
+        guard isLocating else { stopLocate(); return }
+        locateBlink.toggle()
+        // 定位期整条项都在跳，所以改标题（宽度已按 locateLength 预留，不会挤到别人）
+        statusItem.button?.title = " " + (locateBlink ? locateLabel : "       ")
+        statusItem.button?.alphaValue = locateBlink ? 1.0 : 0.35
+        // 圆点同期换成醒目的靶心
+        applyDot(force: true)
+    }
+
+    private func stopLocate() {
+        locateTimer?.invalidate()
+        locateTimer = nil
+        locateUntil = nil
+        locateBlink = false
+        statusItem.button?.alphaValue = 1.0
+        lastTitleKey = ""
+        lastDotContentsKey = ""
         render(force: true)
     }
 
