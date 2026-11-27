@@ -46,6 +46,29 @@ private let jsonDecoder = JSONDecoder()
 private let tickInterval: TimeInterval = 0.5
 /// 发光动画帧间隔。灯的半拍是 250ms，20fps 足够让明暗切换看起来干净
 private let animInterval: TimeInterval = 1.0 / 12.0
+/// 诊断日志：只记布局被系统改动这类事件，正常运行完全不写。
+/// 路径放日志目录，跟 bridge.log 一起看。
+private let diagPath = (logDir as NSString).appendingPathComponent("menubar-diag.log")
+
+private func vklog(_ msg: String) {
+    let f = DateFormatter()
+    f.dateFormat = "MM-dd HH:mm:ss"
+    let line = "\(f.string(from: Date())) \(msg)\n"
+    guard let data = line.data(using: .utf8) else { return }
+    let fm = FileManager.default
+    try? fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+    if let size = try? fm.attributesOfItem(atPath: diagPath)[.size] as? Int, size > 64_000 {
+        try? fm.removeItem(atPath: diagPath)
+    }
+    if let fh = FileHandle(forWritingAtPath: diagPath) {
+        fh.seekToEndOfFile()
+        fh.write(data)
+        fh.closeFile()
+    } else {
+        fm.createFile(atPath: diagPath, contents: data)
+    }
+}
+
 /// 「定位我」窗口期显示的文字与时长
 private let locateLabel = "◀ 我 ▶"
 private let locateSeconds: TimeInterval = 30
@@ -254,6 +277,12 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
     // 每秒 4 次就到 7% CPU；改用图层动画后降到 0.2%。
     private var dotLayer: CALayer?
     private var dotPlaceholder: NSImage?
+    /// 上一次断言过的固定宽度。菜单栏在显示器活跃度切换时会重建状态项宿主窗口，
+    /// 副带把 length 打回 variableLength —— 此时内容宽度（圆点在/不在）就会直接决定项宽，
+    /// 左侧所有图标跟着左右跳。所以每轮都要把长度断言回去。
+    private var assertedLength: CGFloat = -1
+    /// 上一次看到的状态项窗口 frame，用来确认「到底是谁在动」
+    private var lastWindowFrame: CGRect = .zero
     private var lastDotContentsKey = ""
     private var lastDotKey = ""
 
@@ -331,8 +360,34 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
     }
 
     private func applyLength() {
-        if isLocating { statusItem.length = locateLength; return }
-        statusItem.length = iconOnly ? iconLength : labelLength
+        let target = isLocating ? locateLength : (iconOnly ? iconLength : labelLength)
+        if statusItem.length != target {
+            statusItem.length = target
+            vklog("length -> \(Int(target))")
+        }
+        assertedLength = target
+    }
+
+    /// 每轮体检：长度、占位图、圆点图层三者任何一项被系统弄丢了就补回去。
+    /// 这三件事都是指针/数值比较，开销可忽略。
+    private func reassertLayout() {
+        guard let button = statusItem.button else { return }
+        if statusItem.length != assertedLength { applyLength() }
+        if button.image !== dotPlaceholder {
+            button.image = dotPlaceholder
+            vklog("image 丢失，已补占位")
+        }
+        // 只记变化：能直接看出我们这一项有没有挪位/改宽
+        if let wf = button.window?.frame, !wf.equalTo(lastWindowFrame) {
+            lastWindowFrame = wf
+            vklog("window x=\(Int(wf.minX)) y=\(Int(wf.minY)) w=\(Int(wf.width)) h=\(Int(wf.height))")
+        }
+        if dotLayer?.superlayer !== button.layer {
+            installDotLayer()
+            lastDotContentsKey = ""
+            applyDot(force: true)
+            vklog("圆点图层丢失，已重建")
+        }
     }
 
     private var isLocating: Bool {
@@ -428,6 +483,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate {
 
     @objc private func tick() {
         reviveIfHidden()
+        reassertLayout()
         refresh()
         render()
         // 外部也能触发定位（defaults write com.proma.vibekey-menubar locateRequest -int <时间戳>），

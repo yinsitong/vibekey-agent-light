@@ -195,6 +195,7 @@ All subcommands: `busy` `pulse` `pulse-loop` `mode` `dial` `dialcfg` `flash`
 ```bash
 python3 bridge.py --publish confirm   # only rewrites status.json (no light) — test the menu bar pulse
 tail -20 ~/Library/Logs/PromaVibeKey/bridge.log
+tail -20 ~/Library/Logs/PromaVibeKey/menubar-diag.log   # written only when the layout is disturbed
 ```
 
 ## status.json fields

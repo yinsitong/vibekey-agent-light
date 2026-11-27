@@ -193,7 +193,12 @@ $BIN status                  # 设备状态概览
 ```bash
 python3 bridge.py --publish confirm   # 只写 status.json（不动灯），用来单独验证菜单栏同频闪烁
 tail -20 ~/Library/Logs/PromaVibeKey/bridge.log
+tail -20 ~/Library/Logs/PromaVibeKey/menubar-diag.log   # 菜单栏布局被系统改动时才写
 ```
+
+`menubar-diag.log` 只在状态项的宽度/占位图/圆点图层被系统改动时记一行
+（例如插拔显示器、切换活跃屏、被收纳工具接管），正常运行完全不写。
+菜单栏一旦出现「左边图标在跳」，先看这个文件就能判断是不是我们这一项在动。
 
 ## status.json 字段
 
